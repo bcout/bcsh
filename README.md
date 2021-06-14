@@ -9,7 +9,9 @@
 1) Navigate to /src
 
 ```$ make run```
-    or 	
+
+or 	
+
 1) Navigate to /bin after compiling (see TO COMPILE)
 
 ```$ ./bcsh```
