@@ -1,19 +1,19 @@
 # TO COMPILE
 	
-	1) Navigate to /src
-	$ make
+1) Navigate to /src
+```$ make```
 
 # TO RUN
 	
-	1) Navigate to /src
-	$ make run
+1) Navigate to /src
+```$ make run```
     or 	
-	1) Navigate to /bin after compiling (see TO COMPILE)
-	$ ./bcsh
+1) Navigate to /bin after compiling (see TO COMPILE)
+```$ ./bcsh```
 
 # TO CLEAN
 	
-	make clean
+```$make clean```
 
 # NOTES
 
