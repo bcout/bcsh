@@ -1,0 +1,824 @@
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_constants.h
+ * * * * * * * * * * * * * * * * * * *
+ * All the constants I will use are here
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+#define INITIAL_TOKEN_BUFFER 25
+
+#define MAX_TOKENS 100
+
+#define INITIAL_PATH_LENGTH 100
+
+#define NUM_INTERNAL_COMMANDS 4
+
+extern char* internal_command_names[];
+
+extern int (*internal_commands[]) ();
+
+#define TOKEN_DELIM " \t\n"
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_execution.h
+ * * * * * * * * * * * * * * * * * * *
+ * Functions used to execute commands
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+int execute_command(char** tokens);
+
+int execute_piped_commands(char*** prepared_commands);
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_internals.h
+ * * * * * * * * * * * * * * * * * * *
+ * The internal functions cd and exit
+ *  are declared here
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+int cd_internal(char** tokens);
+
+int exit_internal(char** tokens);
+
+int fg_internal(char** tokens);
+
+int bg_internal(char** tokens);
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_io.h
+ * * * * * * * * * * * * * * * * * * *
+ * All the functions I will use for I/O
+ *  are declared here
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+char* read_line_stdin();
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_signals.h
+ * * * * * * * * * * * * * * * * * * *
+ * Signal handler functions
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+void signal_handler(int signum);
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_utils.h
+ * * * * * * * * * * * * * * * * * * *
+ * Some miscellaneous useful functions
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+void get_cwd_direct();
+
+char** get_tokens(char* line);
+
+int has_pipes(char** tokens);
+
+char*** prepare_commands(char** tokens);
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_execution.c
+ * * * * * * * * * * * * * * * * * * *
+ * All the functions I will use for I/O
+ *  are declared here
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+
+#include "../include/bcsh_constants.h"
+#include "../include/bcsh_internals.h"
+
+/**
+ * This function takes a list of tokens and executes the commands they represent. It
+ *  first checks if the first command is an internal one (cd or exit), before dealing
+ *  with it accordingly.
+ *  This function is used if there are no pipes in the input
+ * @param tokens An array of string tokens representing commands and arguments
+ * @return 0 if the shell can continue, 1 if we have to stop (got exit command, or something)
+ */
+int execute_command(char** tokens){
+
+    /********************************************************************
+    Declare variables
+    ********************************************************************/
+    char* command = tokens[0];
+    int i;
+    pid_t pid;
+    int status;
+    int return_code;
+
+    /********************************************************************
+    Check if user entered an empty line
+    ********************************************************************/
+    if(command == NULL){
+        return 0;
+    }
+
+    /********************************************************************
+    Check if program is an internal command (cd or exit)
+    ********************************************************************/
+    for(i = 0; i < NUM_INTERNAL_COMMANDS; i++){
+        if(strncmp(command, internal_command_names[i], strlen(internal_command_names[i])) == 0){
+            return internal_commands[i](tokens); //This runs the function using its pointer, passing tokens as an argument
+        }
+    }
+
+    /********************************************************************
+    Otherwise, run the external command
+        If there is an error, abort but allow the user to continue using
+        the shell. Basically, we're always going to return 0. The internal
+        command exit is the only one that returns 1 (stop the shell).
+    ********************************************************************/
+    pid = fork();
+    if(pid == 0){
+        //We're in child
+        return_code = execvp(command, tokens);
+        if(return_code == -1){
+            perror("Error in execute_command() : execvp failed ");
+            exit(EXIT_FAILURE); //End the child process
+        }
+    }else{
+        //We're in parent
+        if(pid == -1){
+            //Fork failed
+            perror("Error in execute_command() : fork failed ");
+            return EXIT_SUCCESS;
+        }
+        waitpid(pid, &status, 0);
+    }
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * If the input has pipes in it, this function will handle them, executing each command
+ *  within this function (it does not use execute_command()).
+ */
+int execute_piped_commands(char*** prepared_commands){
+
+    /********************************************************************
+    Declare variables
+    ********************************************************************/
+    int old_pipe[2];
+    int new_pipe[2];
+    int return_code;
+    int err;
+    pid_t pid;
+    int num_commands = 0;
+    int status;
+
+    int i = 0;
+    int j;
+    while(prepared_commands[i] != NULL){
+        num_commands++;
+
+        /********************************************************************
+        If there is a next command, create a pipe using new_pipe
+        ********************************************************************/
+        if(prepared_commands[i + 1] != NULL){
+            err = pipe(new_pipe);
+            if(err == -1){
+                perror("Error in execute_piped_commands() : Could not create pipe ");
+                return EXIT_SUCCESS;
+            }
+        }
+
+
+        pid = fork();
+        if(pid == 0){
+            //We're in child
+            /********************************************************************
+            If there is a command before this, make this process read from pipe
+                Copy read end using dup2 and close both file descriptors
+                Use old_pipe
+            ********************************************************************/
+            if(i > 0){
+                dup2(old_pipe[0], 0);
+                close(old_pipe[0]);
+                close(old_pipe[1]);
+            }
+
+            /********************************************************************
+            If there is a command after this, make this process write to pipe
+                Copy write end using dup2 and close both file descriptors
+                Use new_pipe
+            ********************************************************************/
+            if(prepared_commands[i + 1] != NULL){
+                close(new_pipe[0]);
+                dup2(new_pipe[1], 1);
+                close(new_pipe[1]);
+            }
+
+            /********************************************************************
+            Execute command
+                If it is an internal command, execute it accordingly
+            ********************************************************************/
+            for(j = 0; j < NUM_INTERNAL_COMMANDS; j++){
+                if(strncmp(prepared_commands[i][0], internal_command_names[j], strlen(internal_command_names[j])) == 0){
+                    return internal_commands[j](prepared_commands);
+                }
+            }
+
+            return_code = execvp(prepared_commands[i][0], prepared_commands[i]);
+            if(return_code == -1){
+                perror("Error in execute_piped_commands() : execvp failed ");
+                exit(EXIT_FAILURE); //End the child process
+            }
+
+        }else{
+            //We're in parent
+            /********************************************************************
+            Check if fork failed
+            ********************************************************************/
+            if(pid == -1){
+                //Fork failed
+                perror("Error in execute_command() : fork failed ");
+                return EXIT_SUCCESS;
+            }
+
+            /********************************************************************
+            If there is a previous command, close old_pipe
+            ********************************************************************/
+            if(i > 0){
+                close(old_pipe[0]);
+                close(old_pipe[1]);
+            }
+
+            /********************************************************************
+            If there is a next command, old_pipe = new_pipe
+            ********************************************************************/
+            if(prepared_commands[i + 1] != NULL){
+                old_pipe[0] = new_pipe[0];
+                old_pipe[1] = new_pipe[1];
+            }
+        }
+        i++;
+    }
+
+    if(i > 0){
+        close(old_pipe[0]);
+        close(old_pipe[1]);
+    }
+
+    for(i = 0; i < num_commands; i++){
+        waitpid(-1, &status, WUNTRACED);
+    }
+
+
+
+    return EXIT_SUCCESS;
+
+}
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_internals.c
+ * * * * * * * * * * * * * * * * * * *
+ * The internal commands cd and exit
+ *  will be implemented here
+ * * * * * * * * * * * * * * * * * * *
+ */
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include <sys/types.h>
+
+#include "../include/bcsh_constants.h"
+
+/**
+ * This function attempts to change the current working directory with the path
+ *  provided in the argument.
+ */
+int cd_internal(char** tokens){
+    /********************************************************************
+    Declare variables
+    ********************************************************************/
+    char* path;
+    int err;
+
+    /********************************************************************
+    Check if the provided path is null (no provided path)
+    ********************************************************************/
+    if(tokens[1] == NULL){
+        fprintf(stderr, "Error in cd_internal() : No path provided\n");
+        return EXIT_SUCCESS;
+    }
+
+    /********************************************************************
+    Chdir() requires the path variable be addressable, so put it in heap
+    ********************************************************************/
+    path = malloc((strlen(tokens[1]) + 1) * sizeof(char));
+    if(path == NULL){
+        fprintf(stderr, "Error in cd_internal() : Could not allocate space for path\n");
+        return EXIT_SUCCESS;
+    }
+
+    /********************************************************************
+    Copy the path token into the allocated space
+    ********************************************************************/
+    strncpy(path, tokens[1], strlen(tokens[1]) + 1);
+
+    /********************************************************************
+    Change the current directory using chdir()
+    ********************************************************************/
+    err = chdir(path);
+    if(err == -1){
+        perror("Error in cd_internal ");
+    }
+
+    free(path);
+
+    return EXIT_SUCCESS;
+}
+
+int exit_internal(char** tokens){
+    return 1;
+}
+
+int fg_internal(char** tokens){
+    return 0;
+}
+
+int bg_internal(char** tokens){
+    fprintf(stderr, "bg\n");
+    return 0;
+}
+
+char* internal_command_names[] =
+    {
+        "cd",
+        "exit",
+        "fg",
+        "bg"
+    };
+
+int (*internal_commands[])(char** tokens) =
+    {
+        &cd_internal,
+        &exit_internal,
+        &fg_internal,
+        &bg_internal
+    };
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_io.c
+ * * * * * * * * * * * * * * * * * * *
+ * All the functions I will use for I/O
+ *  are defined here
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+
+/**
+ * Reads a line from stdin using getline() and returns it
+ * @return The line read from stdin, NULL if getline() throws an error
+ */
+char* read_line_stdin(){
+
+    /********************************************************************
+    Declare variables
+    ********************************************************************/
+    char* line = NULL;
+    size_t buffer = 0; //getline decides how long this buffer should be
+    size_t chars_read;
+
+    /********************************************************************
+    getline() allocates space for the line, no matter how big it is
+        That means we need to free() it in main(), though.
+    ********************************************************************/
+    chars_read = getline(&line, &buffer, stdin); //Returns a null terminated string with a newline at the end
+    if(chars_read == -1){
+        perror("ERROR in read_line_stdin() : getline() returned -1 characters read\n");
+        return NULL;
+    }
+
+    return line;
+}
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_main.c
+ * * * * * * * * * * * * * * * * * * *
+ * Must compile with -Wall and no warnings
+ * Must compile and produce an executable with make
+ * Must run with make run
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+//chdir(), fork(), pid_t, getcwd()
+#include <unistd.h>
+//execvp()
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <signal.h>
+
+#include "../include/bcsh_constants.h"
+#include "../include/bcsh_io.h"
+#include "../include/bcsh_utils.h"
+#include "../include/bcsh_execution.h"
+#include "../include/bcsh_signals.h"
+
+volatile sig_atomic_t signal_handled = 0;
+
+/**
+ * Starts up Brennan Couturier's Shell (bcsh) and runs it
+ * This program will read commands from stdin, separate them into tokens, then execute them if they're valid
+ * @param argc The number of command line arguments
+ * @param argv A reference to an array of command line arguments
+ * @return Returns EXIT_SUCCESS if everything goes well, EXIT_FAILURE if things did not go well
+ */
+int main(int argc, char** argv){
+
+    /********************************************************************
+    Declare and initialize variables
+    ********************************************************************/
+    char* path = NULL;
+    char** path_ref = &path;
+    char* line = NULL;
+    char** tokens = NULL;
+    char*** piped_commands = NULL;
+    int done = 0;
+
+    /********************************************************************
+    Register for SIGTSTP signal (ctrl-z)
+        Also, store the current process id. The handler uses it to
+        determine if a program is running on top of the shell or not.
+    ********************************************************************/
+    signal(SIGTSTP, signal_handler);
+
+    do{
+
+        /********************************************************************
+        Get the current working directory and print it out
+            We are getting it each iteration in case it was changed in the
+            previous iteration.
+        ********************************************************************/
+        get_cwd_direct(path_ref);
+
+        if(signal_handled){
+            fprintf(stdout, "\n");
+            signal_handled = 0;
+        }
+        fprintf(stdout, "%s%% ", *path_ref);
+
+        /********************************************************************
+        Get a line of input
+        ********************************************************************/
+        line = read_line_stdin();
+
+        /********************************************************************
+        Tokenize the input
+        ********************************************************************/
+        tokens = get_tokens(line);
+
+        /********************************************************************
+        Execute the commands contained in tokens
+            Treat commands with pipes different than simple commands
+        ********************************************************************/
+        if(has_pipes(tokens)){
+            piped_commands = prepare_commands(tokens);
+            if(piped_commands != NULL){
+                done = execute_piped_commands(piped_commands);
+            }
+        }else{
+            done = execute_command(tokens);
+        }
+
+
+        /********************************************************************
+        Free our malloced variables so that when we start the next iteration
+            we don't need to worry about losing track of memory. We're going
+            to end up mallocing them again, so it's better to free here than
+            inside a bunch of different functions
+        ********************************************************************/
+        if(piped_commands != NULL){
+            int k = 0;
+            while(piped_commands[k] != NULL){
+                free(piped_commands[k]);
+                piped_commands[k] = NULL;
+                k++;
+            }
+            free(piped_commands);
+            piped_commands = NULL;
+        }
+        free(*path_ref);
+        *path_ref = NULL;
+        free(tokens);
+        tokens = NULL;
+        free(line);
+        line = NULL;
+
+    }while(!done);
+
+
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_signals.c
+ * * * * * * * * * * * * * * * * * * *
+ * Signal handlers will be implemented here
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+extern volatile sig_atomic_t signal_handled;
+
+void signal_handler(int signum){
+    signal_handled = 1;
+    signal(signum, signal_handler);
+}/**
+ * * * * * * * * * * * * * * * * * * *
+ * Brennan Couturier
+ * * * * * * * * * * * * * * * * * * *
+ * bcsh_utils.c
+ * * * * * * * * * * * * * * * * * * *
+ * All the functions I will use for I/O
+ *  are declared here
+ * * * * * * * * * * * * * * * * * * *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "../include/bcsh_constants.h"
+#include "../include/bcsh_internals.h"
+
+/**
+ * This function is given a reference to a string and will set the reference to point to the
+ *  current working directory.
+ * @param path_ref A reference to the current working directory string
+ */
+void get_cwd_direct(char** path_ref){
+
+    /********************************************************************
+    Declare variables
+    ********************************************************************/
+    int offset = 1;
+    char* path;
+    size_t actual_space_needed;
+
+    /********************************************************************
+    Get the current working directory using getcwd()
+        If the buffer isn't big enough, keep retrying with larger buffers
+    ********************************************************************/
+    path = getcwd(NULL, INITIAL_PATH_LENGTH * sizeof(char));
+    while(path == NULL){
+        if(errno == ERANGE){
+            //Buffer was not big enough, we can come back from this.
+            offset = offset * 2;
+            path = getcwd(NULL, INITIAL_PATH_LENGTH * offset);
+        }else{
+            //A different error occured, we will not attempt to come back from this.
+            perror("Error in get_cwd_direct()");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    /********************************************************************
+    Path now holds the current working directory, but it was probably
+        given too much space, so we'll reallocate it to only use what it
+        needs
+    ********************************************************************/
+    actual_space_needed = strlen(path) + 1;
+    path = realloc(path, actual_space_needed);
+    if(path == NULL){
+        fprintf(stderr, "Error in get_cwd_direct() : Failed to reallocate space for current working directory\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /********************************************************************
+    Now we need to make path_ref point to path
+        We know that *path_ref has been freed or is NULL at this point
+        because main() frees *path_ref at the end of the execution loop,
+        allowing us to do this.
+    ********************************************************************/
+    *path_ref = path;
+}
+
+/**
+ * This function takes a string whitespace separated tokens and will separate them using strtok_r. It will then
+ *  populate and return an array of these tokens. It will exit() upon encountering memory allocation errors.
+ * @param line A string containing all the tokens to be split up
+ * @return An array of string tokens
+ */
+char** get_tokens(char* line){
+
+    /********************************************************************
+    Declare variables
+    ********************************************************************/
+    char** tokens;
+    char* token;
+    char* saveptr = NULL;
+    size_t buffer_position = 0;
+    size_t buffer_size = INITIAL_TOKEN_BUFFER;
+    size_t num_tokens = 0;
+
+    /********************************************************************
+    Allocate space for tokens
+    ********************************************************************/
+    tokens = malloc(buffer_size * sizeof(char*));
+    if(tokens == NULL){
+        fprintf(stderr, "Error in get_tokens() : Could not allocate space for tokens array\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /********************************************************************
+    Tokenize the string
+    ********************************************************************/
+    token = strtok_r(line, TOKEN_DELIM, &saveptr);
+    while(token != NULL){
+
+        tokens[buffer_position] = token;
+        buffer_position++;
+        num_tokens++;
+
+        //If there are more tokens than we allocated space for, reallocate more space
+        if(buffer_position >= buffer_size){
+            tokens = realloc(tokens, (buffer_size + INITIAL_TOKEN_BUFFER) * sizeof(char*));
+            if(tokens == NULL){
+                fprintf(stderr, "Error in get_tokens() : Could not reallocate space for tokens array\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        token = strtok_r(NULL, TOKEN_DELIM, &saveptr);
+    }
+
+    /********************************************************************
+    Realloc the tokens array to only use what it needs
+    ********************************************************************/
+    tokens = realloc(tokens, (num_tokens + 1) * sizeof(char*));
+    if(tokens == NULL){
+        fprintf(stderr, "Error in get_tokens() : Could not reallocate space for tokens array\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /********************************************************************
+    Null terminate the array to that we can traverse it without knowing
+        the size
+    ********************************************************************/
+    tokens[num_tokens] = NULL;
+
+    return tokens;
+}
+
+
+/**
+ * This function parses the list of tokens, looking for a pipe
+ * @param tokens A null-terminated list of string arguments
+ * @return 1 if one or more pipes are found, 0 otherwise
+ */
+int has_pipes(char** tokens){
+    int i = 0;
+    while(tokens[i] != NULL){
+        if(strncmp(tokens[i], "|", strlen("|")) == 0){
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+/**
+ * This function takes an array of tokens separated by one or more pipes.
+ *  It groups the tokens on each side of the pipes together and stores
+ *  them all in an array of string arrays
+ * ex. ls -l | grep a | more
+ *  prepared_commands = {{ls, -l}, {grep, a}, {more}}
+ * @param tokens A null-terminated list of string arguments
+ * @return An array of prepared commands to be executed using execute_piped_commands(), NULL if there is an error.
+ */
+char*** prepare_commands(char** tokens){
+    /********************************************************************
+    Declare variables
+    ********************************************************************/
+    char*** prepared_commands;
+    char** grouped_commands;
+    int num_commands = 0;
+    int num_commands_in_group = 0;
+    int i, j, n, m;
+
+    /********************************************************************
+    Find out how many actual commands there are
+        This works out to be the number of pipes plus one. So, count
+        the number of pipes, then add one when it's all done.
+    ********************************************************************/
+    i = 0;
+    while(tokens[i] != NULL){
+        if(strncmp(tokens[i], "|", strlen("|")) == 0){
+            num_commands++;
+        }
+        i++;
+    }
+    num_commands++;
+
+    /********************************************************************
+    Allocate space for the list of command groups plus space for a null
+        terminator
+    ********************************************************************/
+    prepared_commands = malloc((num_commands + 1) * sizeof(char**));
+    if(prepared_commands == NULL){
+        fprintf(stderr, "Error in prepare_commands() : Could not allocate space for prepared_commands array\n");
+        return NULL;
+    }
+
+    /********************************************************************
+    Populate the prepared_commands list
+    ********************************************************************/
+    n = 0;
+    for(i = 0; i < num_commands; i++){
+        num_commands_in_group = 0;
+        m = n;
+
+        /********************************************************************
+        Count how many commands are in the command group
+            ex. ls -l would have two 'commands' (ls and -l)
+        ********************************************************************/
+        while(tokens[n] != NULL && strncmp(tokens[n], "|", strlen("|")) != 0){
+            num_commands_in_group++;
+            n++;
+        }
+        n++;
+
+        /********************************************************************
+        Allocate space for the group of commands plus a null terminator
+        ********************************************************************/
+        grouped_commands = malloc((num_commands_in_group + 1) * sizeof(char*));
+        if(grouped_commands == NULL){
+            fprintf(stderr, "Error in prepare_commands() : Could not allocate space for grouped_commands array\n");
+            return NULL;
+        }
+
+        /********************************************************************
+        Put the commands into the group, null terminate it, then add that
+            group to the list
+        ********************************************************************/
+        for(j = 0; j < num_commands_in_group; j++){
+            grouped_commands[j] = tokens[m];
+            m++;
+        }
+        grouped_commands[num_commands_in_group] = NULL;
+        prepared_commands[i] = grouped_commands;
+    }
+
+    /*******************************************************************
+    Terminate the list with a null terminator then return it
+    ********************************************************************/
+    prepared_commands[num_commands] = NULL;
+    return prepared_commands;
+}
