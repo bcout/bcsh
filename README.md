@@ -1,18 +1,18 @@
 # TO COMPILE
 	
-1) Navigate to /src
+Navigate to /src
 
 ```$ make```
 
 # TO RUN
 	
-1) Navigate to /src
+Navigate to /src
 
 ```$ make run```
 
 or 	
 
-1) Navigate to /bin after compiling (see TO COMPILE)
+Navigate to /bin after compiling (see TO COMPILE)
 
 ```$ ./bcsh```
 
