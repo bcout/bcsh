@@ -18,11 +18,15 @@ Navigate to /bin after compiling (see TO COMPILE)
 
 # TO CLEAN
 	
-```$make clean```
+```$ make clean```
+
+# USAGE
+
+Use like a normal shell. Keep in mind it will most certainly not have as many features as most fully fledged shells, but it does function for basic commands
 
 # NOTES
 
-- Job control was not implemented. I did not set it up properly from the start to allow for job management, and remaking the entire shell could not be done in time.
+- Job control is not implemented.
 - This shell supports unlimited arguments per command, there is no hardcoded limit.
 - It can run single commands
 - It can run an unlimited number of piped commands, there is no hardcoded limit to the number of pipes.
