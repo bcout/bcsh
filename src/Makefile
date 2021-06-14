@@ -25,7 +25,7 @@ $(TARGET): $(OBJ)
 .PHONY: clean run debug valgrind
 
 clean:
-	rm -f $(ODIR)/*.o *~ core $(INCDIR)/*~ $(TARGETDIR)/*
+	rm -f $(ODIR)/*.o *~ core $(INCDIR)/*~ $(TARGETDIR)/$(TARGET)
 
 run: $(TARGET)
 	$(TARGETDIR)/$^
